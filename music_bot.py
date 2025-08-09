@@ -9,13 +9,19 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeybo
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
 
 # === НАСТРОЙКИ ===
-API_TOKEN = "8421693077:AAGkkuoHSp9-P2vQ369ZGjaNAizs4z54Zho"
+API_TOKEN = os.getenv("API_TOKEN")  # токен бота из переменных окружения Render
 MAX_FILE_SIZE_MB = 50
 CACHE_DIR = "cache"
 COOKIES_FILE = "cookies.txt"
 TRACKS_FILE = "tracks.json"  # файл для хранения плейлистов
+
+# Render Webhook config
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # адрес Render из переменных окружения
+WEBHOOK_PATH = f"/webhook"  # безопасный путь без токена
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
@@ -37,7 +43,6 @@ def save_tracks():
     with open(TRACKS_FILE, "w", encoding="utf-8") as f:
         json.dump(user_tracks, f, ensure_ascii=False, indent=2)
 
-# Плейлисты пользователей {user_id: [пути к mp3]}
 user_tracks = load_tracks()
 
 # === СОСТОЯНИЯ ===
@@ -68,19 +73,16 @@ async def about_bot(message: types.Message):
         "Выбери «🔍 Найти трек» и введи название."
     )
 
-
 @dp.message(F.text == "🔍 Найти трек")
 async def ask_track_name(message: types.Message, state: FSMContext):
     await message.reply("Напиши название песни, которую хочешь найти:")
     await state.set_state(SearchStates.waiting_for_search)
 
-# === МОЯ МУЗЫКА ===
 @dp.message(F.text == "🎼 Моя музыка")
 async def my_music(message: types.Message):
     tracks = user_tracks.get(str(message.from_user.id), [])
     existing_tracks = [p for p in tracks if os.path.exists(p)]
 
-    # Удаляем несуществующие файлы
     if len(existing_tracks) != len(tracks):
         user_tracks[str(message.from_user.id)] = existing_tracks
         save_tracks()
@@ -103,12 +105,10 @@ async def my_music(message: types.Message):
         if i + batch_size < len(existing_tracks):
             await asyncio.sleep(2)
 
-# === ПОИСК ТРЕКА ===
 @dp.message(SearchStates.waiting_for_search, F.text)
 async def search_music(message: types.Message, state: FSMContext):
     query = message.text.strip()
     await state.clear()
-
     await message.reply("🔍 Ищу треки...")
 
     try:
@@ -132,7 +132,6 @@ async def search_music(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.reply(f"❌ Ошибка при поиске: {e}")
 
-# === СКАЧИВАНИЕ ===
 @dp.callback_query(F.data.startswith("dl:"))
 async def download_track(callback: types.CallbackQuery):
     video_id = callback.data.split(":")[1]
@@ -160,7 +159,6 @@ async def download_track(callback: types.CallbackQuery):
             os.remove(filename)
             return await callback.message.edit_text(f"❌ Файл слишком большой ({size_mb:.1f} МБ).")
 
-        # Сохраняем трек в JSON
         user_tracks.setdefault(str(callback.from_user.id), []).append(filename)
         save_tracks()
 
@@ -169,10 +167,30 @@ async def download_track(callback: types.CallbackQuery):
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при скачивании: {e}")
 
-# === ЗАПУСК ===
-async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+# === WEBHOOK ДЛЯ RENDER ===
+async def handle_webhook(request):
+    try:
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        logging.error(f"Webhook handling error: {e}")
+    return web.Response(text="ok")
+
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    logging.info(f"Webhook set to {WEBHOOK_URL}")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+
+def start_web_app():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    port = int(os.getenv("PORT", 8080))
+    web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    start_web_app()
