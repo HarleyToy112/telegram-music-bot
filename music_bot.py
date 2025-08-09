@@ -12,15 +12,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
 # === НАСТРОЙКИ ===
-API_TOKEN = os.getenv("API_TOKEN")  # токен бота из переменных окружения Render
+API_TOKEN = os.getenv("API_TOKEN")  # токен бота из Render
 MAX_FILE_SIZE_MB = 50
 CACHE_DIR = "cache"
 COOKIES_FILE = "cookies.txt"
-TRACKS_FILE = "tracks.json"  # файл для хранения плейлистов
+TRACKS_FILE = "tracks.json"
 
-# Render Webhook config
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # адрес Render из переменных окружения
-WEBHOOK_PATH = f"/webhook"  # безопасный путь без токена
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например: https://telegram-music-bot-d9oz.onrender.com
+WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 logging.basicConfig(level=logging.INFO)
