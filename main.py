@@ -1,6 +1,5 @@
 import os
 import logging
-import asyncio
 from aiohttp import web
 from music_bot import bot, dp
 
