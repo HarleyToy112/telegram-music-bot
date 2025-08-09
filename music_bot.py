@@ -185,10 +185,29 @@ async def on_shutdown(app):
 
 def start_web_app():
     app = web.Application()
+
+    # Обрабатываем POST-запросы от Telegram
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+    # Действия при старте
+    async def on_startup(app):
+        # Устанавливаем webhook
+        await bot.set_webhook(WEBHOOK_URL)
+        logging.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
+
+    # Действия при остановке
+    async def on_shutdown(app):
+        await bot.delete_webhook()
+        logging.info("🛑 Webhook удалён")
+
+    # Регистрируем события
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+
+    # Получаем порт от Render (или 8080 по умолчанию)
     port = int(os.getenv("PORT", 8080))
+
+    # Запускаем aiohttp-сервер
     web.run_app(app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
