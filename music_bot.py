@@ -12,7 +12,8 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 
-API_TOKEN = os.getenv("BOT_TOKEN")  # ⚡ токен из переменных окружения Render
+# === НАСТРОЙКИ ===
+API_TOKEN = "8421693077:AAGkkuoHSp9-P2vQ369ZGjaNAizs4z54Zho"
 MAX_FILE_SIZE_MB = 50
 CACHE_DIR = "cache"
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
@@ -24,6 +25,7 @@ dp = Dispatcher(storage=MemoryStorage())
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# === АВТОМАТИЧЕСКИЙ ЭКСПОРТ КУКОВ ИЗ CHROME ===
 def export_cookies():
     try:
         cj = browser_cookie3.chrome(domain_name=".youtube.com")
@@ -37,6 +39,7 @@ def export_cookies():
 
 export_cookies()
 
+# === ЗАГРУЗКА/СОХРАНЕНИЕ ПЛЕЙЛИСТОВ ===
 def load_tracks():
     if os.path.exists(TRACKS_FILE):
         try:
@@ -50,11 +53,14 @@ def save_tracks():
     with open(TRACKS_FILE, "w", encoding="utf-8") as f:
         json.dump(user_tracks, f, ensure_ascii=False, indent=2)
 
+# Плейлисты пользователей {user_id: [пути к mp3]}
 user_tracks = load_tracks()
 
+# === СОСТОЯНИЯ ===
 class SearchStates(StatesGroup):
     waiting_for_search = State()
 
+# === КНОПКИ ===
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🔍 Найти трек")],
@@ -64,29 +70,36 @@ main_menu = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# === КОМАНДЫ ===
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     await message.reply("🎵 Привет! Я музыкальный бот.\nВыбери действие:", reply_markup=main_menu)
 
 @dp.message(F.text == "ℹ️ О боте")
 async def about_bot(message: types.Message):
-    await message.reply("Я ищу треки на YouTube и отправляю их в mp3.")
+    await message.reply("Я ищу треки на YouTube и отправляю их в mp3.А также в разделе Моя музыка будет все треки которые ты скачивал.\nВыбери «🔍 Найти трек» и введи название.")
 
 @dp.message(F.text == "🔍 Найти трек")
 async def ask_track_name(message: types.Message, state: FSMContext):
     await message.reply("Напиши название песни, которую хочешь найти:")
     await state.set_state(SearchStates.waiting_for_search)
 
+# === МОЯ МУЗЫКА ===
 @dp.message(F.text == "🎼 Моя музыка")
 async def my_music(message: types.Message):
     tracks = user_tracks.get(str(message.from_user.id), [])
     existing_tracks = [p for p in tracks if os.path.exists(p)]
+
+    # Удаляем несуществующие файлы
     if len(existing_tracks) != len(tracks):
         user_tracks[str(message.from_user.id)] = existing_tracks
         save_tracks()
+
     if not existing_tracks:
         return await message.reply("📂 У тебя пока нет сохранённых треков.")
+
     await message.reply(f"🎧 Отправляю твои треки ({len(existing_tracks)} шт.)...")
+
     for path in existing_tracks:
         try:
             await message.reply_audio(types.FSInputFile(path), title=os.path.basename(path))
@@ -94,11 +107,14 @@ async def my_music(message: types.Message):
         except Exception as e:
             await message.reply(f"⚠ Ошибка при отправке {os.path.basename(path)}: {e}")
 
+# === ПОИСК ТРЕКА ===
 @dp.message(SearchStates.waiting_for_search, F.text)
 async def search_music(message: types.Message, state: FSMContext):
     query = message.text.strip()
     await state.clear()
+
     await message.reply("🔍 Ищу треки...")
+
     try:
         with yt_dlp.YoutubeDL({
             'format': 'bestaudio/best',
@@ -110,19 +126,23 @@ async def search_music(message: types.Message, state: FSMContext):
             results = info.get("entries", [])
             if not results:
                 return await message.reply("❌ Ничего не нашёл.")
+
             keyboard = [
                 [InlineKeyboardButton(text=video.get("title", "Без названия"), callback_data=f"dl:{video['id']}")]
                 for video in results[:5]
             ]
             await message.reply("🎶 Выбери трек:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
     except Exception as e:
         await message.reply(f"❌ Ошибка при поиске: {e}")
 
+# === СКАЧИВАНИЕ ===
 @dp.callback_query(F.data.startswith("dl:"))
 async def download_track(callback: types.CallbackQuery):
     video_id = callback.data.split(":")[1]
     url = f"https://www.youtube.com/watch?v={video_id}"
     await callback.message.edit_text("⏳ Скачиваю...")
+
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': os.path.join(CACHE_DIR, '%(title)s.%(ext)s'),
@@ -133,17 +153,31 @@ async def download_track(callback: types.CallbackQuery):
         }],
         'cookiefile': COOKIES_FILE
     }
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = os.path.splitext(ydl.prepare_filename(info))[0] + ".mp3"
+
         size_mb = os.path.getsize(filename) / (1024 * 1024)
         if size_mb > MAX_FILE_SIZE_MB:
             os.remove(filename)
             return await callback.message.edit_text(f"❌ Файл слишком большой ({size_mb:.1f} МБ).")
+
+        # Сохраняем трек в JSON
         user_tracks.setdefault(str(callback.from_user.id), []).append(filename)
         save_tracks()
+
         await callback.message.reply_audio(types.FSInputFile(filename), title=info.get("title"))
         await callback.message.edit_text("✅ Готово! Трек добавлен в твой плейлист 🎼")
+
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при скачивании: {e}")
+
+# === ЗАПУСК ===
+async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())

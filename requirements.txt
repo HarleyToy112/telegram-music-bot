@@ -1,4 +1,4 @@
 aiogram==3.2.0
-aiohttp
 yt-dlp
-browser-cookie3
+browser_cookie3
+pycryptodomex
