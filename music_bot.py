@@ -3,30 +3,41 @@ import os
 import asyncio
 import json
 import yt_dlp
+import browser_cookie3
+from http.cookiejar import MozillaCookieJar
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
 
 # === НАСТРОЙКИ ===
-API_TOKEN = os.getenv("API_TOKEN")  # токен бота из Render
+API_TOKEN = "8421693077:AAGkkuoHSp9-P2vQ369ZGjaNAizs4z54Zho"
 MAX_FILE_SIZE_MB = 50
 CACHE_DIR = "cache"
-COOKIES_FILE = "cookies.txt"
-TRACKS_FILE = "tracks.json"
-
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например: https://telegram-music-bot-d9oz.onrender.com
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
+TRACKS_FILE = os.path.join(os.path.dirname(__file__), "tracks.json")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+# === АВТОМАТИЧЕСКИЙ ЭКСПОРТ КУКОВ ИЗ CHROME ===
+def export_cookies():
+    try:
+        cj = browser_cookie3.chrome(domain_name=".youtube.com")
+        cj_mozilla = MozillaCookieJar()
+        for cookie in cj:
+            cj_mozilla.set_cookie(cookie)
+        cj_mozilla.save(COOKIES_FILE, ignore_discard=True, ignore_expires=True)
+        logging.info(f"✅ Cookies экспортированы в {COOKIES_FILE}")
+    except Exception as e:
+        logging.error(f"❌ Не удалось экспортировать cookies: {e}")
+
+export_cookies()
 
 # === ЗАГРУЗКА/СОХРАНЕНИЕ ПЛЕЙЛИСТОВ ===
 def load_tracks():
@@ -42,6 +53,7 @@ def save_tracks():
     with open(TRACKS_FILE, "w", encoding="utf-8") as f:
         json.dump(user_tracks, f, ensure_ascii=False, indent=2)
 
+# Плейлисты пользователей {user_id: [пути к mp3]}
 user_tracks = load_tracks()
 
 # === СОСТОЯНИЯ ===
@@ -65,23 +77,20 @@ async def send_welcome(message: types.Message):
 
 @dp.message(F.text == "ℹ️ О боте")
 async def about_bot(message: types.Message):
-    await message.reply(
-        "Я ищу треки на YouTube и отправляю их в mp3. "
-        "А также в разделе «Моя музыка» будут все треки, которые ты скачивал.\n\n"
-        "📌 Автор: @wtfguys4\n"
-        "Выбери «🔍 Найти трек» и введи название."
-    )
+    await message.reply("Я ищу треки на YouTube и отправляю их в mp3.\nА также в разделе 'Моя музыка' будут все треки, которые ты скачивал.")
 
 @dp.message(F.text == "🔍 Найти трек")
 async def ask_track_name(message: types.Message, state: FSMContext):
     await message.reply("Напиши название песни, которую хочешь найти:")
     await state.set_state(SearchStates.waiting_for_search)
 
+# === МОЯ МУЗЫКА ===
 @dp.message(F.text == "🎼 Моя музыка")
 async def my_music(message: types.Message):
     tracks = user_tracks.get(str(message.from_user.id), [])
     existing_tracks = [p for p in tracks if os.path.exists(p)]
 
+    # Удаляем несуществующие файлы
     if len(existing_tracks) != len(tracks):
         user_tracks[str(message.from_user.id)] = existing_tracks
         save_tracks()
@@ -89,25 +98,21 @@ async def my_music(message: types.Message):
     if not existing_tracks:
         return await message.reply("📂 У тебя пока нет сохранённых треков.")
 
-    await message.reply(f"🎧 Отправляю твои треки ({len(existing_tracks)} шт.) порциями...")
+    await message.reply(f"🎧 Отправляю твои треки ({len(existing_tracks)} шт.)...")
 
-    batch_size = 10
-    for i in range(0, len(existing_tracks), batch_size):
-        batch = existing_tracks[i:i + batch_size]
-        for path in batch:
-            try:
-                await message.reply_audio(types.FSInputFile(path), title=os.path.basename(path))
-                await asyncio.sleep(0.4)
-            except Exception as e:
-                await message.reply(f"⚠ Ошибка при отправке {os.path.basename(path)}: {e}")
-        
-        if i + batch_size < len(existing_tracks):
-            await asyncio.sleep(2)
+    for path in existing_tracks:
+        try:
+            await message.reply_audio(types.FSInputFile(path), title=os.path.basename(path))
+            await asyncio.sleep(0.4)
+        except Exception as e:
+            await message.reply(f"⚠ Ошибка при отправке {os.path.basename(path)}: {e}")
 
+# === ПОИСК ТРЕКА ===
 @dp.message(SearchStates.waiting_for_search, F.text)
 async def search_music(message: types.Message, state: FSMContext):
     query = message.text.strip()
     await state.clear()
+
     await message.reply("🔍 Ищу треки...")
 
     try:
@@ -131,6 +136,7 @@ async def search_music(message: types.Message, state: FSMContext):
     except Exception as e:
         await message.reply(f"❌ Ошибка при поиске: {e}")
 
+# === СКАЧИВАНИЕ ===
 @dp.callback_query(F.data.startswith("dl:"))
 async def download_track(callback: types.CallbackQuery):
     video_id = callback.data.split(":")[1]
@@ -158,57 +164,12 @@ async def download_track(callback: types.CallbackQuery):
             os.remove(filename)
             return await callback.message.edit_text(f"❌ Файл слишком большой ({size_mb:.1f} МБ).")
 
+        # Сохраняем трек в JSON
         user_tracks.setdefault(str(callback.from_user.id), []).append(filename)
         save_tracks()
 
-        await callback.message.edit_text("✅ Трек добавлен в твой плейлист 🎼 (см. 'Моя музыка')")
+        await callback.message.reply_audio(types.FSInputFile(filename), title=info.get("title"))
+        await callback.message.edit_text("✅ Готово! Трек добавлен в твой плейлист 🎼")
 
     except Exception as e:
         await callback.message.edit_text(f"❌ Ошибка при скачивании: {e}")
-
-# === WEBHOOK ДЛЯ RENDER ===
-async def handle_webhook(request):
-    try:
-        data = await request.json()
-        update = types.Update(**data)
-        await dp.feed_update(bot, update)
-    except Exception as e:
-        logging.error(f"Webhook handling error: {e}")
-    return web.Response(text="ok")
-
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"Webhook set to {WEBHOOK_URL}")
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
-
-def start_web_app():
-    app = web.Application()
-
-    # Обрабатываем POST-запросы от Telegram
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-
-    # Действия при старте
-    async def on_startup(app):
-        # Устанавливаем webhook
-        await bot.set_webhook(WEBHOOK_URL)
-        logging.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
-
-    # Действия при остановке
-    async def on_shutdown(app):
-        await bot.delete_webhook()
-        logging.info("🛑 Webhook удалён")
-
-    # Регистрируем события
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    # Получаем порт от Render (или 8080 по умолчанию)
-    port = int(os.getenv("PORT", 8080))
-
-    # Запускаем aiohttp-сервер
-    web.run_app(app, host="0.0.0.0", port=port)
-
-if __name__ == "__main__":
-    start_web_app()
