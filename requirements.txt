@@ -1,0 +1,3 @@
+aiogram
+yt-dlp
+browser-cookie3
